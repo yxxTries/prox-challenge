@@ -4,6 +4,7 @@
  */
 
 import mupdf from "mupdf";
+import { Jimp } from "jimp";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -23,11 +24,56 @@ const PDFS = [
 
 // Pages with little text are diagrams (wiring, schematics, parts, control
 // panels, assembly drawings); text-heavy pages get quoted verbatim instead.
-// 700 captures all unambiguous diagrams while excluding spec tables and
-// instruction pages that hover around 1000+ chars.
 const DIAGRAM_TEXT_THRESHOLD = 700;
 
-function extractPdf(pdfInfo) {
+// Static pixel crops at 1.5× render scale (893×1263 for Owner's Manual pages).
+// Owner's Manual chrome zones (measured from raw renders):
+//   top 82px  — dark section-header bar + tab strip (82px to clear it fully)
+//   bottom 82px — footer strip: "Page N · For technical questions…" (81px zone)
+//   left 75px  — chapter-tab sidebar (SAFETY/CONTROLS/WIRE/MIG/TIG alternating)
+//   right 75px — chapter-tab sidebar (appears on right side on alternate pages)
+// Quick Start / Selection Chart have no sidebar tabs — only small white margins.
+const STATIC_CROPS = {
+  "Owner's Manual":          { top: 82, bottom: 82, left: 75, right: 75 },
+  "Quick Start Guide":       { top: 22, bottom: 22, left: 22, right: 22 },
+  "Process Selection Chart": { top: 15, bottom: 15, left: 15, right: 15 },
+};
+
+// Extract the footer caption text (page number + "For technical questions" line)
+// from raw page text so it can be displayed as a text caption beside the image.
+function extractCaption(pageText, pdfLabel, pageNum) {
+  if (pdfLabel !== "Owner's Manual") return null;
+
+  // Look for "Page N" (the manual's own page number, not the PDF index)
+  const pageMatch = pageText.match(/\bPage\s+(\d+)\b/i);
+  const manualPageNum = pageMatch ? pageMatch[1] : String(pageNum);
+
+  // Look for the "For technical questions" footer line
+  const footerMatch = pageText.match(/For technical questions[^\n]*/i);
+  const footer = footerMatch ? footerMatch[0].trim() : null;
+
+  const parts = [`Page ${manualPageNum}`];
+  if (footer) parts.push(footer);
+  return parts.join(" · ");
+}
+
+async function cropPng(pngBuffer, sourceLabel) {
+  // mupdf returns a Uint8Array; jimp needs a Node Buffer
+  const buf = Buffer.isBuffer(pngBuffer) ? pngBuffer : Buffer.from(pngBuffer);
+  const img = await Jimp.fromBuffer(buf);
+  const crop = STATIC_CROPS[sourceLabel] ?? { top: 0, bottom: 0, left: 0, right: 0 };
+  const w = img.bitmap.width;
+  const h = img.bitmap.height;
+  img.crop({
+    x: crop.left,
+    y: crop.top,
+    w: w - crop.left - crop.right,
+    h: h - crop.top - crop.bottom,
+  });
+  return await img.getBuffer("image/png");
+}
+
+async function extractPdf(pdfInfo) {
   const pdfPath = path.join(FILES_DIR, pdfInfo.filename);
   const data = fs.readFileSync(pdfPath);
   const doc = mupdf.Document.openDocument(data, "application/pdf");
@@ -46,17 +92,21 @@ function extractPdf(pdfInfo) {
     const pageText = structured.asText();
     allText.push(`--- ${pdfInfo.label} | Page ${i + 1} ---\n${pageText}`);
 
-    // Render to PNG at 1.5x scale
+    const dense = pageText.replace(/\s+/g, "").length;
+    const type = dense <= DIAGRAM_TEXT_THRESHOLD ? "diagram" : "text";
+
+    // Render at 1.5× scale then apply static chrome-removal crop
     const matrix = mupdf.Matrix.scale(1.5, 1.5);
     const pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
-    const png = pixmap.asPNG();
+    const rawPng = pixmap.asPNG();
+    const croppedPng = await cropPng(rawPng, pdfInfo.label);
 
     const imgFilename = `${pdfInfo.prefix}-page-${String(i + 1).padStart(3, "0")}.png`;
     const imgPath = path.join(OUTPUT_IMG_DIR, imgFilename);
-    fs.writeFileSync(imgPath, png);
+    fs.writeFileSync(imgPath, croppedPng);
 
-    const dense = pageText.replace(/\s+/g, "").length;
-    const type = dense <= DIAGRAM_TEXT_THRESHOLD ? "diagram" : "text";
+    // Caption: the page-number and footer text stripped from the image
+    const caption = extractCaption(pageText, pdfInfo.label, i + 1);
 
     images.push({
       filename: imgFilename,
@@ -65,6 +115,7 @@ function extractPdf(pdfInfo) {
       page: i + 1,
       label: `${pdfInfo.label} — Page ${i + 1}`,
       type,
+      caption,
     });
 
     process.stdout.write(`\r  Page ${i + 1}/${pageCount} rendered   `);
@@ -74,7 +125,7 @@ function extractPdf(pdfInfo) {
   return { text: allText.join("\n\n"), images };
 }
 
-function main() {
+async function main() {
   console.log("Extracting Vulcan OmniPro 220 manuals...\n");
 
   fs.mkdirSync(OUTPUT_IMG_DIR, { recursive: true });
@@ -85,42 +136,29 @@ function main() {
 
   for (const pdf of PDFS) {
     console.log(`Processing: ${pdf.label}`);
-    const { text, images } = extractPdf(pdf);
+    const { text, images } = await extractPdf(pdf);
     allText.push(text);
     allImages.push(...images);
   }
 
-  // Write lib/manual-content.js (plain JS for easy import)
-  const contentJs = `// Auto-generated by scripts/extract-manual.mjs — do not edit
-export const MANUAL_TEXT = ${JSON.stringify(allText.join("\n\n===\n\n"))};
-`;
-  fs.writeFileSync(path.join(OUTPUT_LIB_DIR, "manual-content.js"), contentJs);
+  // Write plain data files — NOT JS modules.
+  // system-prompt.ts reads these with fs.readFileSync so they never enter
+  // the Next.js module graph and don't cause Turbopack compilation hangs.
+  fs.writeFileSync(
+    path.join(OUTPUT_LIB_DIR, "manual-content.txt"),
+    allText.join("\n\n===\n\n")
+  );
+  console.log("Wrote lib/manual-content.txt");
 
-  // Also write a TypeScript declaration file
-  const contentDts = `export declare const MANUAL_TEXT: string;\n`;
-  fs.writeFileSync(path.join(OUTPUT_LIB_DIR, "manual-content.d.ts"), contentDts);
-
-  console.log("Wrote lib/manual-content.js");
-
-  // Write lib/manual-images.js
-  const imagesJs = `// Auto-generated by scripts/extract-manual.mjs — do not edit
-export const MANUAL_IMAGES = ${JSON.stringify(allImages, null, 2)};
-`;
-  fs.writeFileSync(path.join(OUTPUT_LIB_DIR, "manual-images.js"), imagesJs);
-
-  const imagesDts = `export interface ManualImage {
-  filename: string;
-  url: string;
-  source: string;
-  page: number;
-  label: string;
-  type: "diagram" | "text";
-}
-export declare const MANUAL_IMAGES: ManualImage[];\n`;
-  fs.writeFileSync(path.join(OUTPUT_LIB_DIR, "manual-images.d.ts"), imagesDts);
-
-  console.log("Wrote lib/manual-images.js");
+  fs.writeFileSync(
+    path.join(OUTPUT_LIB_DIR, "manual-images.json"),
+    JSON.stringify(allImages, null, 2)
+  );
+  console.log("Wrote lib/manual-images.json");
   console.log(`\nDone! ${allImages.length} page images across ${PDFS.length} PDFs.`);
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

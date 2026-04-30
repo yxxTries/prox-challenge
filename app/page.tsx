@@ -46,20 +46,10 @@ function splitContent(content: string): Segment[] {
 // Render SVG blocks inline — Claude outputs raw SVG for wiring diagrams
 function InlineSvg({ content }: { content: string }) {
   return (
-    <div className="my-4">
-      <div
-        className="rounded-lg overflow-hidden border border-slate-700"
-        dangerouslySetInnerHTML={{ __html: content }}
-      />
-      <details className="mt-1">
-        <summary className="text-xs text-slate-500 cursor-pointer hover:text-slate-400 select-none">
-          View SVG source
-        </summary>
-        <pre className="mt-2 text-xs text-slate-400 bg-slate-800/60 rounded p-2 overflow-x-auto">
-          <code>{content}</code>
-        </pre>
-      </details>
-    </div>
+    <div
+      className="my-4 rounded-lg overflow-hidden border border-slate-700 [&>svg]:w-full [&>svg]:block"
+      dangerouslySetInnerHTML={{ __html: content }}
+    />
   );
 }
 
@@ -133,15 +123,16 @@ const markdownComponents = {
   // Fenced code blocks — intercept SVG content before <pre> wraps it
   pre: ({ children }: { children?: React.ReactNode }) => {
     const codeEl = Array.isArray(children)
-      ? children.find((c): c is ReactElement => isValidElement(c))
-      : isValidElement(children) ? (children as ReactElement) : undefined;
+      ? children.find((c): c is ReactElement<{ children?: React.ReactNode; className?: string }> => isValidElement(c))
+      : isValidElement(children) ? (children as ReactElement<{ children?: React.ReactNode; className?: string }>) : undefined;
 
     if (codeEl) {
+      const props = codeEl.props as { children?: React.ReactNode; className?: string };
       const raw: string =
-        typeof codeEl.props.children === "string"
-          ? codeEl.props.children
-          : String(codeEl.props.children ?? "");
-      const cls: string = codeEl.props.className ?? "";
+        typeof props.children === "string"
+          ? props.children
+          : String(props.children ?? "");
+      const cls: string = props.className ?? "";
       if (cls === "language-svg" || raw.trim().startsWith("<svg")) {
         return <InlineSvg content={raw.trim()} />;
       }

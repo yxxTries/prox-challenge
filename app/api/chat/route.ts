@@ -5,14 +5,9 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-// Cache the system prompt (it's large — 100KB+ — don't rebuild on every request)
-let cachedSystemPrompt: string | null = null;
-function getSystemPrompt(): string {
-  if (!cachedSystemPrompt) {
-    cachedSystemPrompt = buildSystemPrompt();
-  }
-  return cachedSystemPrompt;
-}
+// Build once at module init — not on first request — so it's ready immediately.
+const SYSTEM_PROMPT = buildSystemPrompt();
+const SPLIT_IDX = SYSTEM_PROMPT.indexOf("## VULCAN OMNIPRO 220 — COMPLETE MANUAL CONTENT");
 
 // Diagram questions (wiring, polarity, cable routing, sockets) ask Claude
 // for an inline SVG — those go to Opus for stronger SVG generation.
@@ -34,23 +29,12 @@ export async function POST(req: Request) {
     return new Response("Invalid messages", { status: 400 });
   }
 
-  const systemPrompt = getSystemPrompt();
-
   const stream = anthropic.messages.stream({
     model: pickModel(messages),
     max_tokens: 8096,
-    // Split into two blocks: instructions (small, re-processed each time) +
-    // manual text (large, cached — ~130KB stays warm for 5 min after first hit)
     system: [
-      {
-        type: "text",
-        text: systemPrompt.slice(0, systemPrompt.indexOf("## VULCAN OMNIPRO 220 — COMPLETE MANUAL CONTENT")),
-      },
-      {
-        type: "text",
-        text: systemPrompt.slice(systemPrompt.indexOf("## VULCAN OMNIPRO 220 — COMPLETE MANUAL CONTENT")),
-        cache_control: { type: "ephemeral" },
-      },
+      { type: "text", text: SYSTEM_PROMPT.slice(0, SPLIT_IDX) },
+      { type: "text", text: SYSTEM_PROMPT.slice(SPLIT_IDX), cache_control: { type: "ephemeral" } },
     ],
     messages: messages.map(
       (m: { role: string; content: string }) => ({
