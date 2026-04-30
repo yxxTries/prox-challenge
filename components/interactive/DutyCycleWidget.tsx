@@ -3,6 +3,8 @@
 import { useState, useMemo } from "react";
 import { WidgetShell, FieldLabel, Slider } from "./WidgetShell";
 import { PROCESS_SPECS, type ProcessName } from "@/lib/welder-specs";
+import { formatMinutesSeconds } from "@/lib/formatting";
+import { sanitizeNumber, sanitizeString } from "@/lib/sanitize";
 
 interface DutyCycleProps {
   ratedAmps?: number;
@@ -11,35 +13,35 @@ interface DutyCycleProps {
   inputVoltage?: number;
 }
 
-function fmtMinSec(seconds: number): string {
-  const m = Math.floor(seconds / 60);
-  const s = Math.round(seconds - m * 60);
-  if (m === 0) return `${s} s`;
-  if (s === 0) return `${m} min`;
-  return `${m} min ${s} s`;
-}
-
 export function DutyCycleWidget(props: DutyCycleProps) {
-  // If only a processLabel is supplied, derive rated values from welder-specs.
+  // Sanitize props to prevent crashes from invalid Claude-generated data
+  const processLabel = sanitizeString(
+    props.processLabel ?? "MIG",
+    ["MIG", "Flux-Cored", "TIG", "Stick"] as const,
+    "MIG"
+  ) as ProcessName;
+
+  const inputVoltage = sanitizeNumber(props.inputVoltage ?? 240, 120, 240, 240);
+  const ratedAmps = sanitizeNumber(props.ratedAmps ?? 220, 30, 350, 220);
+  const ratedDutyPercent = sanitizeNumber(props.ratedDutyPercent ?? 35, 10, 100, 35);
+
+  // Derive fallback values from welder-specs for reference
   const fallback = useMemo(() => {
-    const label = (props.processLabel ?? "MIG") as ProcessName;
-    const spec = PROCESS_SPECS[label] ?? PROCESS_SPECS.MIG;
-    const v = props.inputVoltage === 120 ? spec.v120 : spec.v240;
-    return { ratedAmps: v.ratedAmpsTop, ratedDuty: v.ratedDutyTop, label };
-  }, [props.processLabel, props.inputVoltage]);
+    const spec = PROCESS_SPECS[processLabel] ?? PROCESS_SPECS.MIG;
+    const v = inputVoltage === 120 ? spec.v120 : spec.v240;
+    return { ratedAmps: v.ratedAmpsTop, ratedDuty: v.ratedDutyTop };
+  }, [processLabel, inputVoltage]);
 
-  const ratedAmps = props.ratedAmps ?? fallback.ratedAmps;
-  const ratedDuty = props.ratedDutyPercent ?? fallback.ratedDuty;
-  const processLabel = props.processLabel ?? fallback.label;
-
+  // Slider configuration
   const sliderMin = 30;
   const sliderMax = Math.round(ratedAmps * 1.3);
   const [amps, setAmps] = useState(ratedAmps);
 
+  // Duty cycle calculation
   const dutyPercent = useMemo(() => {
     if (amps <= ratedAmps) return 100;
-    return Math.min(100, ratedDuty * (ratedAmps / amps) ** 2);
-  }, [amps, ratedAmps, ratedDuty]);
+    return Math.min(100, ratedDutyPercent * (ratedAmps / amps) ** 2);
+  }, [amps, ratedAmps, ratedDutyPercent]);
 
   const onSeconds = 600 * (dutyPercent / 100);
   const offSeconds = 600 - onSeconds;
@@ -48,7 +50,7 @@ export function DutyCycleWidget(props: DutyCycleProps) {
   return (
     <WidgetShell
       title={`${processLabel} Duty Cycle`}
-      subtitle={`Rated: ${ratedDuty}% @ ${ratedAmps} A — drag to see duty cycle at any welding current.`}
+      subtitle={`Rated: ${ratedDutyPercent}% @ ${ratedAmps} A — drag to see duty cycle at any welding current.`}
     >
       <div className="space-y-4">
         <div>
@@ -84,10 +86,10 @@ export function DutyCycleWidget(props: DutyCycleProps) {
           </div>
           <div className="flex justify-between text-xs mt-2">
             <span className="text-slate-300">
-              <span className="text-amber-400 font-semibold">Weld:</span> {fmtMinSec(onSeconds)}
+              <span className="text-amber-400 font-semibold">Weld:</span> {formatMinutesSeconds(onSeconds)}
             </span>
             <span className="text-slate-300">
-              <span className="text-slate-400 font-semibold">Rest:</span> {fmtMinSec(offSeconds)}
+              <span className="text-slate-400 font-semibold">Rest:</span> {formatMinutesSeconds(offSeconds)}
             </span>
           </div>
         </div>

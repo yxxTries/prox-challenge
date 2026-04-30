@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { WidgetShell, FieldLabel, Select, Slider } from "./WidgetShell";
 import { WIRE_TENSION } from "@/lib/welder-specs";
+import { valueToPercent, getValueStatus } from "@/lib/formatting";
+import { sanitizeString, sanitizeNumber } from "@/lib/sanitize";
 
 const WIRE_TYPES = ["Solid", "Flux-Cored"] as const;
 type WireType = (typeof WIRE_TYPES)[number];
@@ -12,21 +14,35 @@ interface WireTensionProps {
 }
 
 export function WireTensionGauge({ wireType }: WireTensionProps) {
-  const initial = (WIRE_TYPES as readonly string[]).includes(wireType ?? "")
-    ? (wireType as WireType)
-    : "Solid";
+  // Sanitize wire type to valid option
+  const initial = sanitizeString(
+    wireType ?? "Solid",
+    WIRE_TYPES,
+    "Solid"
+  ) as WireType;
+
   const [type, setType] = useState<WireType>(initial);
-  const [tension, setTension] = useState<number>(initial === "Solid" ? 4 : 2.5);
+
+  // Sanitize tension to 0-10 range
+  const defaultTension = initial === "Solid" ? 4 : 2.5;
+  const [tension, setTension] = useState<number>(
+    sanitizeNumber(defaultTension, 0, 10, defaultTension)
+  );
 
   const range = type === "Solid" ? WIRE_TENSION.solid : WIRE_TENSION.fluxCored;
-  const inRange = tension >= range.min && tension <= range.max;
-  const status = tension < range.min ? "Too loose" : tension > range.max ? "Too tight" : "In range";
-  const statusColor = inRange ? "text-emerald-400" : "text-red-400";
+  const { inRange, status, color: statusColor } = getValueStatus(
+    tension,
+    range.min,
+    range.max,
+    "Too loose",
+    "Too tight",
+    "In range"
+  );
 
   // Render a horizontal gauge 0-10 with the recommended zone highlighted.
   const SCALE_MIN = 0;
   const SCALE_MAX = 10;
-  const pctOf = (v: number) => ((v - SCALE_MIN) / (SCALE_MAX - SCALE_MIN)) * 100;
+  const pctOf = (v: number) => valueToPercent(v, SCALE_MIN, SCALE_MAX);
 
   return (
     <WidgetShell

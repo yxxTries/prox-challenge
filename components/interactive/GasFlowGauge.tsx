@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { WidgetShell, FieldLabel, Select, Slider } from "./WidgetShell";
 import { GAS_FLOW } from "@/lib/welder-specs";
+import { valueToPercent, getValueStatus } from "@/lib/formatting";
+import { sanitizeString, sanitizeNumber } from "@/lib/sanitize";
 
 const GAS_PRESETS = ["MIG", "MIG-aluminum", "TIG"] as const;
 type GasPreset = (typeof GAS_PRESETS)[number];
@@ -18,23 +20,35 @@ interface GasFlowProps {
 }
 
 export function GasFlowGauge({ defaultProcess }: GasFlowProps) {
-  const initial = (GAS_PRESETS as readonly string[]).includes(defaultProcess ?? "")
-    ? (defaultProcess as GasPreset)
-    : "MIG";
+  // Sanitize process selection to valid preset
+  const initial = sanitizeString(
+    defaultProcess ?? "MIG",
+    GAS_PRESETS,
+    "MIG"
+  ) as GasPreset;
+
   const [preset, setPreset] = useState<GasPreset>(initial);
   const range = GAS_FLOW[preset].range;
-  const [scfh, setScfh] = useState<number>(Math.round((range[0] + range[1]) / 2));
+
+  // Sanitize initial flow rate to be within the range
+  const defaultScfh = sanitizeNumber(
+    Math.round((range[0] + range[1]) / 2),
+    range[0],
+    range[1],
+    Math.round((range[0] + range[1]) / 2)
+  );
+  const [scfh, setScfh] = useState<number>(defaultScfh);
 
   const SCALE_MAX = 50;
-  const pctOf = (v: number) => (v / SCALE_MAX) * 100;
-  const inRange = scfh >= range[0] && scfh <= range[1];
-  const status =
-    scfh < range[0]
-      ? "Too low — gas coverage insufficient, expect porosity"
-      : scfh > range[1]
-      ? "Too high — turbulence pulls air into the puddle"
-      : "In recommended range";
-  const statusColor = inRange ? "text-emerald-400" : "text-red-400";
+  const pctOf = (v: number) => valueToPercent(v, 0, SCALE_MAX);
+  const { inRange, status, color: statusColor } = getValueStatus(
+    scfh,
+    range[0],
+    range[1],
+    "Too low — gas coverage insufficient, expect porosity",
+    "Too high — turbulence pulls air into the puddle",
+    "In recommended range"
+  );
 
   return (
     <WidgetShell
